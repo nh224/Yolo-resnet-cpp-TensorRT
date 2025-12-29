@@ -1,0 +1,35 @@
+# Build files
+build/
+*.o
+*.exe
+*.out
+
+# TensorRT engine files
+*.engine
+
+# ONNX models (too large for GitHub)
+*.onnx
+
+# PyTorch models
+*.pt
+
+# Python cache
+__pycache__/
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+
+# Images and videos (optional)
+*.jpg
+*.png
+*.gif
+*.mp4
+*.avi
+
+# Deb packages
+*.deb
+
+# Zone.Identifier files
+*:Zone.Identifier
