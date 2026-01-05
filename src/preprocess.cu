@@ -1,6 +1,7 @@
 #include "preprocess.h"
-#include "cuda_utils.h"
+#include "cuda_utils.h" 
 #include "device_launch_parameters.h"
+#include <opencv2/opencv.hpp> // 需要 OpenCV 进行矩阵求逆
 
 // Host and device pointers for image buffers
 static uint8_t* img_buffer_host = nullptr;    // Pinned memory on the host for faster transfers
@@ -11,7 +12,9 @@ struct AffineMatrix {
     float value[6]; // [m00, m01, m02, m10, m11, m12]
 };
 
-// CUDA kernel to perform affine warp on the image
+// =========================================================================
+// Kernel: 仿射变换 + 归一化 (支持 Mean/Std)
+// =========================================================================
 __global__ void warpaffine_kernel(
     uint8_t* src,           // Source image on device
     int src_line_size,      // Number of bytes per source image row
@@ -22,7 +25,9 @@ __global__ void warpaffine_kernel(
     int dst_height,         // Destination image height
     uint8_t const_value_st, // Constant value for out-of-bound pixels
     AffineMatrix d2s,       // Affine transformation matrix (destination to source)
-    int edge                // Total number of pixels to process
+    int edge,               // Total number of pixels to process
+    float mean_0, float mean_1, float mean_2, // Normalization Mean (R, G, B)
+    float std_0, float std_1, float std_2     // Normalization Std (R, G, B)
 ) {
     // Calculate the global position of the thread
     int position = blockDim.x * blockIdx.x + threadIdx.x;
@@ -44,7 +49,7 @@ __global__ void warpaffine_kernel(
     float src_x = m_x1 * dx + m_y1 * dy + m_z1 + 0.5f;
     float src_y = m_x2 * dx + m_y2 * dy + m_z2 + 0.5f;
 
-    float c0, c1, c2; // Color channels (B, G, R)
+    float c0, c1, c2; // Color channels (will be B, G, R initially)
 
     // Check if the source coordinates are out of bounds
     if (src_x <= -1 || src_x >= src_width || src_y <= -1 || src_y >= src_height) {
@@ -55,44 +60,35 @@ __global__ void warpaffine_kernel(
     }
     else {
         // Perform bilinear interpolation
-
-        // Get the integer parts of the source coordinates
         int y_low = floorf(src_y);
         int x_low = floorf(src_x);
         int y_high = y_low + 1;
         int x_high = x_low + 1;
 
-        // Initialize constant values for out-of-bound pixels
         uint8_t const_value[] = { const_value_st, const_value_st, const_value_st };
 
-        // Calculate the fractional parts
         float ly = src_y - y_low;
         float lx = src_x - x_low;
         float hy = 1 - ly;
         float hx = 1 - lx;
 
-        // Compute the weights for the four surrounding pixels
         float w1 = hy * hx; // Top-left
         float w2 = hy * lx; // Top-right
         float w3 = ly * hx; // Bottom-left
         float w4 = ly * lx; // Bottom-right
 
-        // Initialize pointers to the four surrounding pixels
         uint8_t* v1 = const_value;
         uint8_t* v2 = const_value;
         uint8_t* v3 = const_value;
         uint8_t* v4 = const_value;
 
-        // Top-left pixel
         if (y_low >= 0) {
             if (x_low >= 0)
                 v1 = src + y_low * src_line_size + x_low * 3;
-            // Top-right pixel
             if (x_high < src_width)
                 v2 = src + y_low * src_line_size + x_high * 3;
         }
 
-        // Bottom-left and Bottom-right pixels
         if (y_high < src_height) {
             if (x_low >= 0)
                 v3 = src + y_high * src_line_size + x_low * 3;
@@ -100,35 +96,39 @@ __global__ void warpaffine_kernel(
                 v4 = src + y_high * src_line_size + x_high * 3;
         }
 
-        // Perform bilinear interpolation for each color channel
+        // src is BGR
         c0 = w1 * v1[0] + w2 * v2[0] + w3 * v3[0] + w4 * v4[0]; // Blue
         c1 = w1 * v1[1] + w2 * v2[1] + w3 * v3[1] + w4 * v4[1]; // Green
         c2 = w1 * v1[2] + w2 * v2[2] + w3 * v3[2] + w4 * v4[2]; // Red
     }
 
     // Convert from BGR to RGB by swapping channels
+    // Before: c0=B, c1=G, c2=R
     float t = c2;
     c2 = c0;
     c0 = t;
+    // After: c0=R, c1=G, c2=B
 
-    // Normalize the color values to [0, 1]
-    c0 = c0 / 255.0f;
-    c1 = c1 / 255.0f;
-    c2 = c2 / 255.0f;
+    // Normalize: (x / 255.0 - mean) / std
+    // Note: c0 is Red, so use mean_0/std_0
+    c0 = (c0 / 255.0f - mean_0) / std_0;
+    c1 = (c1 / 255.0f - mean_1) / std_1;
+    c2 = (c2 / 255.0f - mean_2) / std_2;
 
-    // Rearrange the output format from interleaved RGB to separate channels
+    // Rearrange to Planar format (NCHW)
     int area = dst_width * dst_height;
-    float* pdst_c0 = dst + dy * dst_width + dx;        // Red channel
-    float* pdst_c1 = pdst_c0 + area;                   // Green channel
-    float* pdst_c2 = pdst_c1 + area;                   // Blue channel
+    float* pdst_c0 = dst + dy * dst_width + dx;        // R Plane
+    float* pdst_c1 = pdst_c0 + area;                   // G Plane
+    float* pdst_c2 = pdst_c1 + area;                   // B Plane
 
-    // Assign the normalized color values to the destination buffers
     *pdst_c0 = c0;
     *pdst_c1 = c1;
     *pdst_c2 = c2;
 }
 
-// Host function to perform CUDA-based preprocessing
+// =========================================================================
+// Host Function
+// =========================================================================
 void cuda_preprocess(
     uint8_t* src,        // Source image data on host
     int src_width,       // Source image width
@@ -136,15 +136,26 @@ void cuda_preprocess(
     float* dst,          // Destination buffer on device
     int dst_width,       // Destination image width
     int dst_height,      // Destination image height
-    cudaStream_t stream  // CUDA stream for asynchronous execution
+    cudaStream_t stream,  // CUDA stream
+    const float* mean,   // Added: Mean
+    const float* std,    // Added: Std
+    PreprocessMode mode  // Added: Scaling mode
 ) {
-    // Calculate the size of the image in bytes (3 channels: BGR)
-    int img_size = src_width * src_height * 3;
+    // 1. 设置默认 Mean/Std (如果传入为空，默认兼容 YOLO)
+    // YOLO: mean=0, std=1 -> result = x / 255.0
+    float default_mean[3] = {0.0f, 0.0f, 0.0f};
+    float default_std[3]  = {1.0f, 1.0f, 1.0f};
+    
+    // 如果是 ResNet 且未传参，通常应该是 ImageNet 均值，但这里为了安全使用默认值
+    // 用户调用时应手动传入 {0.485, ...}
+    
+    const float* use_mean = mean ? mean : default_mean;
+    const float* use_std  = std  ? std  : default_std;
 
-    // Copy source image data to pinned host memory for faster transfer
+    // 2. 内存拷贝 Host -> Device
+    int img_size = src_width * src_height * 3;
     memcpy(img_buffer_host, src, img_size);
 
-    // Asynchronously copy image data from host to device memory
     CUDA_CHECK(cudaMemcpyAsync(
         img_buffer_device,
         img_buffer_host,
@@ -153,74 +164,78 @@ void cuda_preprocess(
         stream
     ));
 
-    // Define affine transformation matrices
-    AffineMatrix s2d, d2s; // Source to destination and vice versa
+    // 3. 计算仿射变换矩阵
+    AffineMatrix s2d, d2s; 
 
-    // Calculate the scaling factor to maintain aspect ratio
-    float scale = std::min(
-        dst_height / (float)src_height,
-        dst_width / (float)src_width
-    );
-
-    // Initialize source-to-destination affine matrix (s2d)
-    s2d.value[0] = scale;                  // m00
-    s2d.value[1] = 0;                      // m01
-    s2d.value[2] = -scale * src_width * 0.5f + dst_width * 0.5f; // m02
-    s2d.value[3] = 0;                      // m10
-    s2d.value[4] = scale;                  // m11
-    s2d.value[5] = -scale * src_height * 0.5f + dst_height * 0.5f; // m12
-
-    // Create OpenCV matrices for affine transformation
-    cv::Mat m2x3_s2d(2, 3, CV_32F, s2d.value);
-    cv::Mat m2x3_d2s(2, 3, CV_32F, d2s.value);
-
-    // Invert the source-to-destination matrix to get destination-to-source
-    cv::invertAffineTransform(m2x3_s2d, m2x3_d2s);
-
-    // Copy the inverted matrix back to d2s
-    memcpy(d2s.value, m2x3_d2s.ptr<float>(0), sizeof(d2s.value));
-
-    // Calculate the total number of pixels to process
-    int jobs = dst_height * dst_width;
-
-    // Define the number of threads per block
-    int threads = 256;
-
-    // Calculate the number of blocks needed
-    int blocks = ceil(jobs / (float)threads);
-
-    // Launch the warp affine kernel
-    warpaffine_kernel << <blocks, threads, 0, stream >> > (
-        img_buffer_device,           // Source image on device
-        src_width * 3,               // Source line size (bytes per row)
-        src_width,                   // Source width
-        src_height,                  // Source height
-        dst,                         // Destination buffer on device
-        dst_width,                   // Destination width
-        dst_height,                  // Destination height
-        128,                         // Constant value for out-of-bounds (gray)
-        d2s,                         // Destination to source affine matrix
-        jobs                         // Total number of pixels
+    if (mode == MODE_LETTERBOX) {
+        // --- YOLO 风格 (Letterbox: 保持比例，居中) ---
+        float scale = std::min(
+            dst_height / (float)src_height,
+            dst_width / (float)src_width
         );
 
-    // Optionally, you might want to check for kernel launch errors
+        s2d.value[0] = scale;
+        s2d.value[1] = 0;
+        s2d.value[2] = -scale * src_width * 0.5f + dst_width * 0.5f;
+        s2d.value[3] = 0;
+        s2d.value[4] = scale;
+        s2d.value[5] = -scale * src_height * 0.5f + dst_height * 0.5f;
+    } 
+    else {
+        // --- ResNet 风格 (Stretch: 直接拉伸铺满) ---
+        // 忽略原始宽高比
+        float scale_x = (float)dst_width / src_width;
+        float scale_y = (float)dst_height / src_height;
+
+        s2d.value[0] = scale_x;
+        s2d.value[1] = 0;
+        s2d.value[2] = 0; // 无偏移
+        s2d.value[3] = 0;
+        s2d.value[4] = scale_y;
+        s2d.value[5] = 0; // 无偏移
+    }
+
+    // 4. 计算逆矩阵 (dst -> src)
+    // 使用 OpenCV 辅助计算求逆 (保持原有逻辑)
+    cv::Mat m2x3_s2d(2, 3, CV_32F, s2d.value);
+    cv::Mat m2x3_d2s(2, 3, CV_32F, d2s.value);
+    cv::invertAffineTransform(m2x3_s2d, m2x3_d2s);
+    memcpy(d2s.value, m2x3_d2s.ptr<float>(0), sizeof(d2s.value));
+
+    // 5. 启动 Kernel
+    int jobs = dst_height * dst_width;
+    int threads = 256;
+    int blocks = ceil(jobs / (float)threads);
+
+    // 对于 ResNet，填充色可以设为 0，YOLO 设为 114
+    // 为了简单，如果不是 YOLO 模式，我们用 0 填充背景（防止有极小黑边）
+    uint8_t fill_value = (mode == MODE_LETTERBOX) ? 114 : 0;
+
+    warpaffine_kernel << <blocks, threads, 0, stream >> > (
+        img_buffer_device,           
+        src_width * 3,               
+        src_width,                   
+        src_height,                  
+        dst,                         
+        dst_width,                   
+        dst_height,                  
+        fill_value,                         
+        d2s,                         
+        jobs,
+        // 传递归一化参数
+        use_mean[0], use_mean[1], use_mean[2],
+        use_std[0], use_std[1], use_std[2]
+    );
+
     CUDA_CHECK(cudaGetLastError());
 }
 
-// Initialize CUDA preprocessing by allocating memory
 void cuda_preprocess_init(int max_image_size) {
-    // Allocate pinned (page-locked) memory on the host for faster transfers
     CUDA_CHECK(cudaMallocHost((void**)&img_buffer_host, max_image_size * 3));
-
-    // Allocate memory on the device (GPU) for the image
     CUDA_CHECK(cudaMalloc((void**)&img_buffer_device, max_image_size * 3));
 }
 
-// Clean up and free allocated memory
 void cuda_preprocess_destroy() {
-    // Free device memory
     CUDA_CHECK(cudaFree(img_buffer_device));
-
-    // Free pinned host memory
     CUDA_CHECK(cudaFreeHost(img_buffer_host));
 }
