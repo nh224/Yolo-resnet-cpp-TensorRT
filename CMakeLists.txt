@@ -62,16 +62,23 @@ find_package(CUDAToolkit REQUIRED)
 # 包含目录
 include_directories(
     ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/include/core
+    ${CMAKE_SOURCE_DIR}/include/models
     ${TENSORRT_INCLUDE_DIR}
     ${OpenCV_INCLUDE_DIRS}
 )
 
 # 指定源文件列表
-# 注意：根据您的日志，main.cpp 在根目录，wrapper 在 src 目录
+# 新架构：core 和 models 目录，不再使用 wrapper.cpp
 set(SOURCES
-    main.cpp              
-    src/wrapper.cpp       
+    main.cpp
+    src/core/model_base.cpp
+    src/core/engine_builder.cpp
+    src/models/detection_model.cpp
+    src/models/segmentation_model.cpp
+    src/models/classification_model.cpp
     src/preprocess.cu
+    src/postprocess.cu
 )
 
 # =============================================================================

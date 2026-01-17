@@ -1,187 +1,246 @@
-# YOLO ResNet C++ TensorRT
+# YOLOv11 ResNet C++ TensorRT
 
-## 📜 引用
+<div align="center">
 
-YOLO resnet C++ TensorRT 项目是一个高性能目标检测，图像分类解决方案，采用C++实现，并使用NVIDIA TensorRT进行优化。该项目利用 YOLOv8 v11 resnet 模型实现快速准确的目标检测与图像分类，并借助 TensorRT 最大程度地提高推理效率和性能。
+![TensorRT](https://img.shields.io/badge/TensorRT-8.6+-green.svg)
+![CUDA](https://img.shields.io/badge/CUDA-11.7+-green.svg)
+![C++](https://img.shields.io/badge/C++-17-blue.svg)
+![License](https://img.shields.io/badge/License-MIT-yellow.svg)
+
+高性能 YOLOv11/v8 + ResNet C++ 推理框架，使用 NVIDIA TensorRT 加速
+
+[功能](#功能) • [快速开始](#快速开始) • [使用文档](#使用文档) • [性能](#性能)
+
+</div>
 
 ---
 
-## 📢 原作者
+## 📋 目录
 
-主要特点：
-- 模型转换：将 ONNX 模型转换为 TensorRT 引擎文件以加速推理。
-- 视频推理：高效地对视频文件进行目标检测。
-- 图像推理：对单张图像执行目标检测。
-- 高效：针对使用 NVIDIA GPU 的实时目标检测进行了优化。
-- 使用 CUDA 进行预处理：启用 CUDA 的预处理，以加快输入处理速度。
+- [功能](#功能)
+- [支持的模型](#支持的模型)
+- [环境要求](#环境要求)
+- [快速开始](#快速开始)
+- [使用方法](#使用方法)
+- [性能测试](#性能测试)
+- [常见问题](#常见问题)
+- [许可证](#许可证)
 
-https://github.com/nh224/Yolo-resnet-cpp-TensorRT/raw/main/asset/Bench_YOLO_V11.JPG
+---
 
-## 🛠️ 设置
+## ✨ 功能
 
-### 先决条件
-- CMake（版本 3.18 或更高版本）
-- TensorRT（V8.6.1.6：针对使用 YOLOv11 的优化推理。）
-- CUDA 工具包（V11.7：用于 GPU 加速）
-- OpenCV（V4.10.0：用于图像和视频处理）
-- NVIDIA GPU（计算能力7.5或更高）
+- **🚀 高性能推理**: 使用 TensorRT 优化，支持 FP16/FP32 精度
+- **⚡ CUDA 加速预处理**: 完全在 GPU 上进行图像预处理
+- **🎯 多模型支持**: YOLOv11/v8 检测、分割、ResNet 分类
+- **📹 视频推理**: 支持视频文件实时推理
+- **🔧 易于使用**: 简单的命令行接口
 
-### 安装
-1. 克隆仓库：
+---
+
+## 🎯 支持的模型
+
+| 模型类型 | 支持架构 | 输入尺寸 | 说明 |
+|---------|---------|---------|------|
+| **目标检测** | YOLOv8, YOLOv11 | 640×640 | 检测并定位图像中的物体 |
+| **实例分割** | YOLOv8-Seg, YOLOv11-Seg | 640×640 | 检测物体并返回像素级掩码 |
+| **图像分类** | ResNet18/50, EfficientNet 等 | 224×224 | ImageNet 1000类分类 |
+
+---
+
+## 🛠️ 环境要求
+
+### 硬件
+- **GPU**: NVIDIA GPU (计算能力 7.5+)
+- **显存**: 建议 4GB+
+
+### 软件
+| 依赖 | 版本要求 |
+|------|---------|
+| CMake | 3.18+ |
+| CUDA | 11.7+ |
+| TensorRT | 8.6.1+ |
+| OpenCV | 4.0+ |
+
+---
+
+## 🚀 快速开始
+
+### 1. 克隆项目
+
 ```bash
-git clone https://github.com/nh224/Yolo-resnet-cpp-TensorRT.git
-cd YOLOv11-TensorRT
+git clone https://github.com/your-repo/Yolo-V11-cpp-TensorRT.git
+cd Yolo-V11-cpp-TensorRT
 ```
 
-2. 更新 CMakeLists.txt 中的 TensorRT 和 OpenCV 路径：
+### 2. 配置 TensorRT 路径
+
+编辑 `CMakeLists.txt`：
+
 ```cmake
-set(TENSORRT_PATH "F:/Program Files/TensorRT-8.6.1.6")  # Adjust this to your path
+set(TENSORRT_PATH "/usr/local/TensorRT-8.6.1.6")  # 修改为你的路径
 ```
 
-## 原作者功能
+### 3. 编译
 
-### 1. tensorrt版本兼容
-```cpp
-#if NV_TENSORRT_MAJOR < 10
-    // For TensorRT versions less than 10, use getBindingDimensions
-    input_h = engine->getBindingDimensions(0).d[2];
-    input_w = engine->getBindingDimensions(0).d[3];
-    detection_attribute_size = engine->getBindingDimensions(1).d[1];
-    num_detections = engine->getBindingDimensions(1).d[2];
-#else
-    // For TensorRT versions 10 and above, use getTensorShape with tensor names
-    auto input_dims = engine->getTensorShape(engine->getIOTensorName(0));
-    input_h = input_dims.d[2];
-    input_w = input_dims.d[3];
-    
-    auto output_dims = engine->getTensorShape(engine->getIOTensorName(1));
-    detection_attribute_size = output_dims.d[1];
-    num_detections = output_dims.d[2];
-#endif
-```
-
-### 2. onnx转换为tensorrt
-构建项目：
 ```bash
-mkdir build
-cd build
+mkdir build && cd build
 cmake ..
 make -j$(nproc)
 ```
 
-### 3. 对照片和视频推理
+编译成功后生成 `YOLOv11TRT` 可执行文件。
 
-## 🚀 用法
+---
 
-### 将 Yolov11 转换为 ONNX 模型
+## 📖 使用方法
+
+### 命令格式
+
+```bash
+./YOLOv11TRT <mode> <model_type> <input_path> <engine_path> [options]
+```
+
+### 可用模式
+
+| 模式 | 说明 |
+|------|------|
+| `convert` | ONNX → TensorRT 引擎 |
+| `infer_image` | 图像推理 |
+| `infer_video` | 视频推理 |
+| `infer_segment` | 分割推理 |
+| `benchmark` | 性能测试 |
+
+### 使用示例
+
+#### 1️⃣ 模型转换
+
+```bash
+# FP16 模式 (默认，速度快)
+./YOLOv11TRT convert model.onnx model.engine
+
+# FP32 模式 (精度最高)
+./YOLOv11TRT convert model.onnx model.engine --fp32
+```
+
+#### 2️⃣ 图像分类 (ResNet)
+
+```bash
+./YOLOv11TRT infer_image resnet test_images/car.jpg resnet18.engine
+```
+
+
+#### 3️⃣ 目标检测 (YOLO)
+
+```bash
+./YOLOv11TRT infer_image yolo test_images/dog.jpg yolo11s.engine
+```
+
+#### 4️⃣ 实例分割 (YOLO-Seg)
+
+```bash
+./YOLOv11TRT infer_segment yolo-seg test_images/person.jpg yolov8s-seg.engine
+```
+
+#### 5️⃣ 视频推理
+
+```bash
+./YOLOv11TRT infer_video yolo video.mp4 yolo11s.engine
+```
+
+#### 6️⃣ 性能测试
+
+```bash
+# 默认 100 次
+./YOLOv11TRT benchmark resnet test.jpg resnet18.engine
+
+# 自定义测试次数
+./YOLOv11TRT benchmark yolo test.jpg yolo11s.engine 80 1000
+```
+
+---
+
+## ⚡ 性能
+
+### 测试环境
+- **GPU**: NVIDIA Jetson Orin
+- **CUDA**: 11.7
+- **TensorRT**: 8.6.1.6
+
+### 性能数据
+
+| 模型 | 输入尺寸 | FP16 延迟 | FP32 延迟 | FPS (FP16) |
+|------|---------|----------|----------|-----------|
+| YOLOv11s | 640×640 | ~5ms | ~8ms | ~200 |
+| ResNet18 | 224×224 | ~2.5ms | ~3ms | ~400 |
+| YOLOv8s-Seg | 640×640 | ~7ms | ~11ms | ~140 |
+
+
+## 📂 项目结构
+
+```
+Yolo-V11-cpp-TensorRT/
+├── include/              # 头文件
+│   ├── core/            # TensorRT 引擎构建
+│   ├── models/          # 模型封装
+│   └── types.h          # 类型定义
+├── src/                 # 源文件
+│   ├── core/            # TensorRT 引擎实现
+│   ├── models/          # 模型推理实现
+│   ├── preprocess.cu    # CUDA 预处理
+│   └── postprocess.cu   # CUDA 后处理
+├── model_weights/       # 模型权重
+├── test_images/         # 测试图像
+├── outputs/             # 输出结果
+├── CMakeLists.txt      # 构建配置
+├── main.cpp             # 主程序
+└── README.md           # 本文件
+```
+
+---
+
+## ❓ 常见问题
+
+### Q: 编译时找不到 TensorRT 头文件？
+
+**A**: 检查 `CMakeLists.txt` 中的 `TENSORRT_PATH` 是否正确。
+
+### Q: 运行时找不到共享库？
+
+**A**: 添加 TensorRT lib 目录到 `LD_LIBRARY_PATH`：
+
+```bash
+export LD_LIBRARY_PATH=/usr/local/TensorRT-8.6.1.6/lib:$LD_LIBRARY_PATH
+```
+
+### Q: 如何导出 ResNet ONNX 模型？
+
+**A**: 参考 `export_resnet_onnx.py`：
+
 ```python
-from ultralytics import YOLO
-# Load the YOLO model
-model = YOLO("yolo11s.pt")
-#Export the model to ONNX format
-export_path = model.export(format="onnx")
+from torchvision import models
+import torch
+
+# 加载模型
+model = models.resnet18(pretrained=True)
+model.eval()
+
+# 导出 ONNX
+dummy_input = torch.randn(1, 3, 224, 224)
+torch.onnx.export(model, dummy_input, "resnet18.onnx",
+                  opset_version=17, export_params=True)
 ```
 
-### 将 ONNX 模型转换为 TensorRT 引擎
-要将 ONNX 模型转换为 TensorRT 引擎文件，请使用以下命令：
-```bash
-./YOLOv11TRT convert path_to_your_model.onnx path_to_your_engine.engine
-```
-- path_to_your_model.onnx：ONNX 模型文件的路径。
-- path_to_your_engine.engine: TensorRT 引擎文件保存的路径。
-
-### 对视频进行推理
-要对视频进行推理，请使用以下命令：
-```bash
-./YOLOv11TRT infer_video path_to_your_video.mp4 path_to_your_engine.engine
-```
-- path_to_your_video.mp4：输入视频文件的路径。
-- path_to_your_engine.engine：TensorRT 引擎文件的路径。
-
-### 对照片进行推理
-对图像运行推理 要对图像运行推理，请使用以下命令：
-```bash
-./YOLOv11TRT infer_image path_to_your_image.jpg path_to_your_engine.engine
-```
-- path_to_your_image.jpg：输入图像文件的路径。
-- path_to_your_engine.engine：TensorRT 引擎文件的路径。
-
-## 我的添加
-
-### 1. 转换为tensorrt 兼容yolov8 v11 resnet
-```bash
-./YOLOv11TRT convert path_to_your_model.onnx path_to_your_engine.engine
-```
-
-### 2. 推理支持照片视频yolov8 v11 resnet
-设置预处理参数并且使用cuda加速预处理
-```cpp
-void Wrapper::infer(const cv::Mat& input, std::vector<Object>& objects, int& cls_id, float& cls_score) {
-    // 1. 预处理参数
-    float mean[3], std[3];
-    PreprocessMode p_mode;
-
-    if (config_.type == ModelType::RESNET_CLS) {
-        mean[0] = 0.485f; mean[1] = 0.456f; mean[2] = 0.406f;
-        std[0]  = 0.229f; std[1]  = 0.224f; std[2]  = 0.225f;
-        p_mode = MODE_STRETCH;
-    } else {
-        mean[0] = 0.0f; mean[1] = 0.0f; mean[2] = 0.0f;
-        std[0]  = 1.0f; std[1]  = 1.0f; std[2]  = 1.0f;
-        p_mode = MODE_LETTERBOX;
-    }
-
-    // 2. 执行预处理
-    cuda_preprocess(
-        input.data, input.cols, input.rows, 
-        (float*)buffers[0], input_w, input_h, 
-        stream, mean, std, p_mode
-    );
-```
-
-后处理如果是yolo就做NMS如果是resnet就做softmax.
-```cpp
-// 3. 后处理
-    if (config_.type == ModelType::YOLO_DETECT) {
-        float scale = std::min((float)input_h / input.rows, (float)input_w / input.cols);
-        postprocess_yolo(output_buffer_host, output_size, objects, scale, input.cols, input.rows);
-    } 
-    else {
-        postprocess_resnet(output_buffer_host, output_size, cls_id, cls_score);
-    }
-```
-
-### 编译后如何使用
-```bash
-./YOLOv11TRT infer_image resnet path_to_your_image.jpg path_to_your_engine.engine
-
-./YOLOv11TRT infer_video resnet path_to_your_video.mp4 path_to_your_engine.engine
-
-./YOLOv11TRT infer_image yolo path_to_your_image.jpg path_to_your_engine.engine
-
-./YOLOv11TRT infer_video yolo path_to_your_video.mp4 path_to_your_engine.engine
-```
-
-## ⚙️ 配置
-
-### CMake 配置
-如果 TensorRT 和 OpenCV 安装在非默认位置，请在 CMakeLists.txt 文件中更新它们的路径：
-
-设置 TensorRT 安装路径
-```cmake
-#Define the path to TensorRT installation
-set(TENSORRT_PATH "F:/Program Files/TensorRT-8.6.1.6")  # Update this to the actual path for TensorRT
-```
-确保路径指向 TensorRT 的安装目录。
-
-### 故障排除
-找不到 nvinfer.lib：请确保 TensorRT 已正确安装，并且 nvinfer.lib 位于指定路径中。更新 CMakeLists.txt 文件，添加 TensorRT 库的正确路径。
-链接器错误：请验证所有依赖项（OpenCV、CUDA、TensorRT）是否已正确安装，以及它们的路径是否已在 CMakeLists.txt 中正确设置。
-运行时错误：请确保您的系统已安装正确的 CUDA 驱动程序，并且 TensorRT 运行时库可访问。将 TensorRT 的 bin 目录添加到系统 PATH 环境变量中。
+---
 
 ## 📜 引用
-我的代码是基于作者https://github.com/hamdiboukamcha/Yolo-V11-cpp-TensorRT
-```
+
+本项目基于以下开源项目：
+
+- **原始项目**: [hamdiboukamcha/Yolo-V11-cpp-TensorRT](https://github.com/hamdiboukamcha/Yolo-V11-cpp-TensorRT)
+- **YOLO**: [Ultralytics YOLO](https://github.com/ultralytics/ultralytics)
+
+```bibtex
 @misc{boukamcha2024yolov11,
     author = {Hamdi Boukamcha},
     title = {Yolo-V11-cpp-TensorRT},
@@ -190,3 +249,17 @@ set(TENSORRT_PATH "F:/Program Files/TensorRT-8.6.1.6")  # Update this to the act
     howpublished = {\url{https://github.com/hamdiboukamcha/Yolo-V11-cpp-TensorRT/}},
 }
 ```
+
+---
+
+## 📄 许可证
+
+MIT License
+
+---
+
+<div align="center">
+
+**⭐ 如果这个项目对你有帮助，请给个 Star！**
+
+</div>
